@@ -1,0 +1,8 @@
+prefix=/home/mikael/project_ws2/devel/.private/planning
+
+Name: planning
+Description: Description of planning
+Version: 0.0.0
+Cflags: -I/home/mikael/project_ws2/devel/.private/planning/include
+Libs: -L/home/mikael/project_ws2/devel/.private/planning/lib 
+Requires: rospy std_msgs geometry_msgs message_runtime

@@ -1,0 +1,8 @@
+prefix=/home/mikael/project_ws2/devel/.private/transforms
+
+Name: transforms
+Description: Description of transforms
+Version: 0.0.0
+Cflags: 
+Libs: -L/home/mikael/project_ws2/devel/.private/transforms/lib 
+Requires: 

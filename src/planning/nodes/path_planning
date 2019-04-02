@@ -1,0 +1,248 @@
+#!/usr/bin/env python
+
+from os.path import abspath, dirname, join
+import pickle
+from threading import Thread
+import time
+import numpy as np
+import math
+
+import rospy
+from planning.msg import PoseWithUncertainties
+from std_msgs.msg import String, Bool
+from crazyflie_gazebo.msg import Position
+from geometry_msgs.msg import PoseStamped
+
+from create_waypoints.generator import waypointGenerator
+from create_waypoints.simple_motion import SimpleMotion
+
+import tf2_ros
+import tf2_geometry_msgs
+from tf.transformations import euler_from_quaternion
+
+
+path = join(join(dirname(dirname(abspath(__file__))), 'src'), 'files')
+
+fp = open(join(path, 'planning_data_fine.txt'), 'rb')
+stuff = pickle.load(fp)
+
+wptG = waypointGenerator(stuff)
+simpleM = SimpleMotion()
+real2map_scale = stuff[0]
+map_shape = stuff[2]
+nodes = stuff[6]
+
+tf_buf = None
+tf_lstn = None
+
+pub_wpt = None
+pub_mission = None
+
+gate_nr = 0
+nr_gates = len(np.where(nodes[:, 6] != 'False')[0])/2
+
+current_pose = None
+waypoint_pose = None
+last_send_waypoint = None
+start_goal_set = False
+init_task = None
+shutdown = False
+current_task = None
+last_waypoint_recieved = False
+waypoint_cnt = 0
+requirement = 3
+diff_yaw = 0
+
+def callback_pose(data):
+    global diff_yaw, current_pose
+    last_yaw = current_pose.position.w if current_pose is not None else 0
+
+    time = data.header.stamp
+    if not tf_buf.can_transform('map', data.header.frame_id, time):
+		trans = tf_buf.lookup_transform('map', data.header.frame_id, time, rospy.Duration(1.0))
+
+    data = tf_buf.transform(data, 'map')
+
+    (roll, pitch, yaw) = euler_from_quaternion((data.pose.orientation.x, \
+                    						   data.pose.orientation.y, \
+                    						   data.pose.orientation.z, \
+                    						   data.pose.orientation.w))
+
+    current_pose = PoseWithUncertainties()
+    current_pose.position.x = data.pose.position.x
+    current_pose.position.y = data.pose.position.y
+    current_pose.position.z = data.pose.position.z
+    current_pose.position.w = yaw*180/math.pi
+
+    diff_yaw = abs(((current_pose.position.w - last_yaw + 180) % 360 ) - 180)
+
+def callback_loc(msg):
+    global current_pose
+    wptG.set_uncertainties(current_pose.uncertainties.x, \
+                           current_pose.uncertainties.y, \
+                           current_pose.uncertainties.w)
+
+def callback_task(msg):
+    global waypoint_pose, start_goal_set, init_task, nodes_now_goal, current_task, waypoint_cnt
+    print('P.P., new task: %s' % msg.data)
+
+    if current_pose is None:
+        init_task = msg
+        return
+
+    init_task = None
+    start_goal_set = True
+    start_pos = (current_pose.position.x, current_pose.position.y)
+    current_task = msg.data
+
+    if msg.data == 'start':
+        msg = Bool()
+        msg.data = True
+        pub_mission.publish(msg)
+        start_goal_set = False
+        waypoint_cnt = 100
+
+    elif msg.data == 'go_up':
+        simpleM.set_raise(current_pose, 0.4)
+
+    elif msg.data == 'land':
+        simpleM.set_lower(current_pose, 0.4)
+
+    elif msg.data == 'turn':
+        simpleM.set_turn(current_pose)
+
+    elif msg.data == 'go_to_marker':
+        wptG.set_start_goal(get_idx(start_pos), None, spec='marker')
+
+    elif msg.data == 'go_to_next_gate':
+        nr = gate_nr % (nr_gates)+1
+        wptG.set_start_goal(get_idx(start_pos), \
+                nodes[np.where(nodes[:, 6] == '%d-0' % nr), 0].astype('int')[0][0])
+
+    elif msg.data == 'go_through_gate':
+        nr = gate_nr % (nr_gates)+1
+        wptG.set_start_goal(get_idx(start_pos), \
+                nodes[np.where(nodes[:, 6] == '%d-1' % nr), 0].astype('int')[0][0])
+
+    elif msg.data == 'explore':
+        wptG.set_start_goal(get_idx(start_pos), None, spec='explore')
+
+    elif msg.data == 'go_to_safe_spot':
+        wptG.set_start_goal(get_idx(start_pos), None, spec='safe')
+
+    elif msg.data == 'stop':
+        global shutdown
+        shutdown = True
+        print('Path Planner: all done.')
+
+def pub_waypoint():
+    global last_send_waypoint, waypoint_cnt
+    rate = rospy.Rate(20)
+    while not rospy.is_shutdown():
+        if waypoint_pose is not None:
+            this_waypoint = waypoint_pose
+            wp = Position()
+            wp.header.stamp = rospy.Time.now()
+            wp.header.frame_id = 'map'
+            wp.x = this_waypoint[0]
+            wp.y = this_waypoint[1]
+            wp.z = this_waypoint[2]
+            wp.yaw = this_waypoint[3]
+            pub_wpt.publish(wp)
+            if last_send_waypoint != this_waypoint:
+                waypoint_cnt = 0
+            last_send_waypoint = this_waypoint
+
+        rate.sleep()
+
+def get_idx(pos):
+    if isinstance(pos[0], float):
+        return np.argmin(np.sum(abs(np.subtract(\
+                        nodes[:,3:5].astype('float'), [pos[0], pos[1]])), axis=1))
+    else:
+        return np.argmin(np.sum(abs(np.subtract(\
+                        nodes[:,1:3].astype('int'), [pos[0], pos[1]])), axis=1))
+
+def close_enough():
+    global waypoint_cnt
+    if current_pose is None or waypoint_pose is None:
+        return True
+    else:
+        diff1 = [current_pose.position.x - waypoint_pose[0],
+        		current_pose.position.y - waypoint_pose[1],
+                current_pose.position.z - waypoint_pose[2]]
+        diff1 = np.sum(np.absolute(diff1))
+        diff2 = current_pose.position.w - waypoint_pose[3]
+        diff2 = abs( ( (diff2 + 180) % 360 ) - 180 )
+        b = diff1 < .2 and \
+               (current_task in ['start', 'go_up', 'land'] or \
+               ( (diff2 < 10 and diff_yaw < 0.5) or (diff2 < 15 and diff_yaw < 0.1) ))
+        ########################################################################
+        return b
+
+
+def change_waypoint():
+    global start_goal_set, waypoint_pose, last_waypoint_recieved, gate_nr, waypoint_cnt, diff_angle, requirement
+    rate = rospy.Rate(10) # 10
+    while not rospy.is_shutdown() and shutdown is False:
+        response = None
+        if init_task is not None:
+            callback_task(init_task)
+        elif start_goal_set and close_enough():
+            waypoint_cnt += 1
+            if waypoint_cnt >=requirement:
+                waypoint_yaw = waypoint_pose[3] if waypoint_pose is not None else 0
+                if last_waypoint_recieved is True:
+                    last_waypoint_recieved = False
+                    msg = Bool()
+                    msg.data = True
+                    pub_mission.publish(msg)
+                    start_goal_set = False
+                    if current_task == 'go_through_gate':
+                        gate_nr += 1
+                elif current_task not in ['stop', 'start', 'go_up', 'land', 'turn']:
+                    if waypoint_pose is not None:
+                        nodes[get_idx(waypoint_pose[0:2]), 8] = True
+                    waypoint_pose, response = wptG.get_waypoint()
+                else:
+                    waypoint_pose, response = simpleM.get_waypoint()
+                diff_angle = abs(((waypoint_pose[3] - waypoint_yaw + 180) % 360 ) - 180)
+                requirement = int(diff_angle/30)
+                requirement = max(3, requirement)
+                ################################################################
+
+        if response is False:
+            msg = Bool()
+            msg.data = False
+            pub_mission.publish(msg)
+            start_goal_set = False
+        elif response is True:
+            last_waypoint_recieved = True
+        rate.sleep()
+    wptG.show_record()
+
+def main():
+    global pub_wpt, pub_mission, tf_buf, tf_lstn
+    rospy.init_node('Path_Planner')
+
+    tf_buf = tf2_ros.Buffer()
+    tf_lstn = tf2_ros.TransformListener(tf_buf)
+
+    sub_loc   = rospy.Subscriber('localization/pose', PoseWithUncertainties, callback_loc)
+    sub_task  = rospy.Subscriber('mission/task', String, callback_task)
+    sub_roll_pitch = rospy.Subscriber('/cf1/pose', PoseStamped, callback_pose)
+
+    pub_wpt     = rospy.Publisher('cf1/cmd_position', Position, queue_size=2)
+    pub_mission = rospy.Publisher('mission/status', Bool, queue_size=2)
+
+    thread_pub_wpt = Thread(target=pub_waypoint)
+    thread_pub_wpt.start()
+
+    thread_change_wpt = Thread(target=change_waypoint)
+    thread_change_wpt.start()
+
+    rospy.spin()
+
+if __name__ == '__main__':
+    print('Path Planner, started...')
+    main()

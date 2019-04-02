@@ -1,0 +1,38 @@
+#!/usr/bin/env python
+
+import math
+import sys
+import rospy
+import tf2_ros
+from tf.transformations import quaternion_from_euler
+from geometry_msgs.msg import TransformStamped
+from std_msgs.msg import String
+
+def create_transform_msg(args):
+    parent, child, x, y, z, yaw, pitch, roll = args
+    t = TransformStamped()
+    t.header.frame_id = parent
+    t.child_frame_id = child
+    t.transform.translation.x = float(x)
+    t.transform.translation.y = float(y)
+    t.transform.translation.z = float(z)
+    (t.transform.rotation.x,
+     t.transform.rotation.y,
+     t.transform.rotation.z,
+     t.transform.rotation.w) = quaternion_from_euler(float(roll),
+                                                     float(pitch),
+                                                     float(yaw))
+    return t
+
+def main(argv=sys.argv):
+    # Let ROS filter through the arguments
+    args = rospy.myargv(argv=argv)[1:]
+
+    # Publish these transforms statically forever
+    rospy.init_node('br_static_transforms')
+    broadcaster = tf2_ros.StaticTransformBroadcaster()
+    broadcaster.sendTransform(create_transform_msg(args))
+    rospy.spin()
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,201 @@
+#!/usr/bin/env python
+
+import rospy
+import numpy as np
+from std_msgs.msg import String, Bool, Int8
+from planning.msg import PoseWithUncertainties
+import time
+
+class StateMachine:
+    def __init__(self):
+        self.sub_loc = rospy.Subscriber('localization/pose', \
+                            PoseWithUncertainties, self.callback_loc)
+        self.sub_status = rospy.Subscriber('mission/status', Bool, \
+                            self.callback_status)
+        self.pub_task = rospy.Publisher('mission/task', String, \
+                            queue_size=2, latch=True)
+        self.sub_battery = rospy.Subscriber('drone/battery_level', Int8, \
+                            self.callback_battery)
+        self.switch_state = {-20: self.land, -21: self.stop, \
+                             -10: self.go_to_safe_spot, -11: self.go_to_marker, -12: self.turn, \
+                              1: self.start,  2: self.go_up,\
+                             10: self.go_to_next_gate, \
+                             20: self.go_through_gate, \
+                             30: self.explore}
+
+        self.state = 0
+        self.main_state = 0
+        self.future_state = 0
+        self.nr_gates = 8
+        self.nr_gates_passed = 0
+        self.battery_warning_sent = False
+        msg = Bool()
+        msg.data = True
+        self.callback_status(msg)
+        rospy.spin()
+
+    def callback_loc(self, msg):
+        if (msg.uncertainties.x >= 0.17 or \
+            msg.uncertainties.y >= 0.17  or \
+            msg.uncertainties.w >= 0.1) and \
+            self.state >= 0:
+
+            if self.state not in [1,2]:
+                self.state = -10
+                self.switch_state[self.state]()
+
+    def callback_battery(self, msg):
+        if msg.data < 10 and not self.battery_warning_sent:
+            self.battery_warning_sent = True
+            if self.state in [-10, -11]:
+                self.main_state = 10
+            elif self.state == 30:
+                self.main_state = 10
+                self.state = 10
+                self.switch_state[self.state]()
+            #elif self.state in [10, 20]:
+            self.future_state = -20
+                # self.switch_state[self.state]()
+
+
+    def callback_status(self, msg):
+        print('M.P., status recieved: %r' % msg.data)
+        print(self.state, self.main_state)
+
+        if self.state == 0:
+            self.state = 1
+
+        elif self.state == 1:
+            self.state = 2
+
+        elif self.state == 2:
+            self.state = 10 if msg.data else -20   #10
+
+        elif self.state == 10:
+            self.state = 20 if msg.data else -20
+
+        elif self.state == 20:
+            if self.future_state != 0:
+                self.state = -20
+            elif msg.data:
+                self.nr_gates_passed += 1
+                # print(self.nr_gates_passed)
+                if self.nr_gates_passed < self.nr_gates -1:
+                    self.state = 10
+                elif self.nr_gates_passed == self.nr_gates -1:
+                    self.state = 10 #30
+                else:
+                    self.state = -20
+            else:
+                self.state = -20
+
+        elif self.state == 30:
+            if msg.data:
+                self.state = 10
+            else:
+                self.state = -20
+
+        elif self.state == -10:
+            self.state = -11 if msg.data else -20
+
+        elif self.state == -11:
+            self.state = -12 if msg.data else -20
+
+        elif self.state == -12:
+            if msg.data:
+                if self.main_state in [2,10,20]:
+                    self.state = 10
+                elif self.main_state in [30]:
+                    self.state = 30
+            else:
+                self.state = -20
+
+        elif self.state == -20:
+            self.state = -21
+
+        elif self.state == -21:
+            return
+
+        self.main_state = self.state if self.state >= 0 else self.main_state
+        self.switch_state[self.state]()
+
+    # ----- States -----------------------------------------------------------------
+    # State Group: 'Stop'/'-20'
+    def land(self): # State -20,
+        print('M.P., send task: land')
+        msg = String()
+        msg.data = 'land'
+        self.pub_task.publish(msg)
+
+    def stop(self): # State -21
+        print('M.P., send task: stop.')
+        msg = String()
+        msg.data = 'stop'
+        self.pub_task.publish(msg)
+        print('Mission Planner, all done.')
+    # --------------------------------------------------------------------------
+
+    # State Group: 'Marker'/'-10'
+    def go_to_safe_spot(self): # State -10
+        print('M.P., send task: go_to_safe_spot')
+        msg = String()
+        msg.data = 'go_to_safe_spot'
+        self.pub_task.publish(msg)
+
+    def go_to_marker(self): # State -11
+        print('M.P., send task: go_to_marker')
+        msg = String()
+        msg.data = 'go_to_marker'
+        self.pub_task.publish(msg)
+
+    def turn(self): # State: -12
+        print('M.P., send task: turn')
+        msg = String()
+        msg.data = 'turn'
+        self.pub_task.publish(msg)
+    # --------------------------------------------------------------------------
+
+    # State Group: 'Start'/'00'
+    def start(self): # State '1'
+        print('M.P., send task: start')
+        msg = String()
+        msg.data = 'start'
+        self.pub_task.publish(msg)
+
+    def go_up(self): # State '2'
+        print('M.P., send task: go_up')
+        msg = String()
+        msg.data = 'go_up'
+        self.pub_task.publish(msg)
+    # --------------------------------------------------------------------------
+
+    # State Group: 'Next'/'10'
+    def go_to_next_gate(self): # State 10
+        print('M.P., send task: go_to_next_gate')
+        msg = String()
+        msg.data = 'go_to_next_gate'
+        self.pub_task.publish(msg)
+    # --------------------------------------------------------------------------
+
+    # State Group: 'Through'/'20'
+    def go_through_gate(self): # State 20
+        print('M.P., send task: go_through_gate')
+        msg = String()
+        msg.data = 'go_through_gate'
+        self.pub_task.publish(msg)
+    # --------------------------------------------------------------------------
+
+    # State Group: 'Explore'/'30'
+    def explore(self): # State 30
+        print('M.P., send task: explore')
+        msg = String()
+        msg.data = 'explore'
+        self.pub_task.publish(msg)
+    # --------------------------------------------------------------------------
+
+
+
+if __name__ == '__main__':
+    print('Mission Planner, started...')
+    rospy.init_node('Mission_Planner')
+    state_machine = StateMachine()

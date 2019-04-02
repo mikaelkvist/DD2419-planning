@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+
+<launch>
+  <!-- Transform map -> cf1/odom    -->
+  <arg name="map" value="map"/>
+  <arg name="odom" value="cf1/odom"/>
+  <arg name="map2odom" value="0 0 0 0 0 0"/>
+  <node pkg="transforms" type="br_static_transforms" name="br_map2odom" args="$(arg map) $(arg odom) $(arg map2odom)" respawn="true"/>
+
+  <!-- Transform cf1/base_link -> camera_link    -->
+  <arg name="base" value="cf1/base_link"/>
+  <arg name="camera" value="camera_link"/>
+  <arg name="base2cam" value="0.01 0 0.02 -1.57079632679 0 -1.57079632679"/>
+  <node pkg="transforms" type="br_static_transforms" name="br_base2cam" args="$(arg base) $(arg camera) $(arg base2cam)" respawn="true"/>
+
+  <!-- Flight camp  -->
+  <node pkg="planning" type="mission_planning" name="Mission_Planner"/>
+  <node pkg="planning" type="path_planning" name="Path_Planner"/>
+</launch>

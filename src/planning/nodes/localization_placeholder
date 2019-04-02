@@ -1,0 +1,92 @@
+#!/usr/bin/env python
+
+import random
+import time
+import math
+
+import rospy
+from planning.msg import PoseWithUncertainties
+from crazyflie_gazebo.msg import Position
+from std_msgs.msg import String, Bool
+from geometry_msgs.msg import PoseStamped
+import tf2_ros
+from tf.transformations import euler_from_quaternion
+
+sub_target_pos = None
+pub_loc_pos = None
+callback_recieved = False
+uncertain = 0.2
+go_to_marker = False
+stop = False
+start_time = time.time()
+rad2deg = 180/math.pi
+
+def callback_status(msg):
+    global uncertain
+    if msg.data is True and go_to_marker is True:
+        uncertain = 0
+
+def callback_task(msg):
+    global go_to_marker, stop
+    if msg.data == 'go_to_marker':
+        go_to_marker = True
+    else:
+        go_to_marker = False
+    if msg.data == 'stop':
+        stop = True
+
+
+def callback_pos(data):
+    global callback_recieved, uncertain, start_time
+    if (time.time() - start_time) > 1: #1 #0.6
+        # uncertain += 0.002
+        start_time = time.time()
+
+    if stop is False:
+        msg = PoseWithUncertainties()
+        msg.position.x = data.x
+        msg.position.y = data.y
+        msg.position.z = data.z
+        msg.position.w = data.yaw
+
+        msg.uncertainties.x = uncertain/2
+        msg.uncertainties.y = uncertain/2
+        msg.uncertainties.z = 0
+        msg.uncertainties.w = uncertain/4
+        print()
+        print(msg.uncertainties)
+
+        pub_loc_pos.publish(msg)
+        callback_recieved = True
+
+def main():
+    global sub_target_pos, pub_loc_pos
+    rospy.init_node('localization_placeholder')
+
+    sub_target_pos = rospy.Subscriber('cf1/cmd_position', Position, callback_pos)
+    # sub_target_pos = rospy.Subscriber('cf1/pose', PoseStamped, callback_pos)
+
+    pub_loc_pos = rospy.Publisher('localization/pose', PoseWithUncertainties, queue_size=2)
+
+    sub_task = rospy.Subscriber('mission/task', String, callback_task)
+    sub_status = rospy.Subscriber('mission/status', Bool, callback_status)
+
+    rate = rospy.Rate(10)
+    while callback_recieved is False and not rospy.is_shutdown():
+        init_msg = PoseWithUncertainties()
+        init_msg.position.x = 0
+        init_msg.position.y = 0
+        init_msg.position.z = 0
+        init_msg.position.w = 0
+
+        init_msg.uncertainties.x = 0
+        init_msg.uncertainties.y = 0
+        init_msg.uncertainties.z = 0
+        init_msg.uncertainties.w = 0
+        pub_loc_pos.publish(init_msg)
+        rate.sleep()
+    rospy.spin()
+
+if __name__ == '__main__':
+    print('localization started')
+    main()

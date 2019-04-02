@@ -1,0 +1,1 @@
+/home/mikael/project_ws2/devel/.private/planning/share/roseus/ros/planning/manifest.l

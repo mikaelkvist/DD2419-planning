@@ -1,0 +1,6 @@
+devel_space: /home/mikael/project_ws2/devel
+install: false
+install_space: /home/mikael/project_ws2/install
+profile: default
+source_space: /home/mikael/project_ws2/src
+workspace: /home/mikael/project_ws2
